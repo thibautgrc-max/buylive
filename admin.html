@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Builder Command OS — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">B</div>
+      <div>
+        <div class="eyebrow">Back-office</div>
+        <h1>Command Center</h1>
+      </div>
+    </div>
+
+    <nav class="topnav">
+      <a href="index.html">Retour boutique</a>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <section class="dashboard-grid">
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Pilotage</div>
+            <h3>Vue globale</h3>
+          </div>
+        </div>
+
+        <div class="hero-kpis">
+          <div class="kpi"><strong id="adminOrders">0</strong><span>commandes</span></div>
+          <div class="kpi"><strong id="adminPaid">0</strong><span>payées</span></div>
+          <div class="kpi"><strong id="adminRevenue">0 €</strong><span>CA</span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Automations</div>
+            <h3>Actions batch</h3>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button id="exportBtn" class="btn btn-secondary">Exporter JSON</button>
+          <button id="seedShipmentsBtn" class="btn btn-secondary">Simuler bordereaux</button>
+          <button id="resetBtn" class="btn btn-danger">Réinitialiser</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">Commandes</div>
+          <h3>File active</h3>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Client</th>
+              <th>Réf</th>
+              <th>Total</th>
+              <th>Paiement</th>
+              <th>Livraison</th>
+              <th>Tracking</th>
+              <th>Statut</th>
+            </tr>
+          </thead>
+          <tbody id="ordersTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="admin.js"></script>
+</body>
+</html>
