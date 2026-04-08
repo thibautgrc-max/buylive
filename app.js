@@ -1,8 +1,9 @@
 /* ══════════════════════════════════════════════════════════════
-   LIVEORDER PRO — app.js v6.0
+   LIVEORDER PRO — app.js v7.0
    Architecture : State-driven · Progressive Steps · CRO-First
    Improved     : Scroll reveals · Smooth counters · Haptic UX
                   Robust validation · Cleaner DOM cache
+                  Delivery module ready · Pickup / Locker / Map
 ══════════════════════════════════════════════════════════════ */
 
 'use strict';
@@ -17,16 +18,20 @@ const CONFIG = {
     JB07: { price: 59,  name: 'Produit JB07' },
     AL11: { price: 24,  name: 'Produit AL11' },
   },
+
   shipping: {
     default: { price: 6.00, label: 'Relais Standard' },
   },
+
   formspreeEndpoint: 'https://formspree.io/f/TON_FORM_ID',
   stripeLink:        'https://buy.stripe.com/TON_LIEN_STRIPE',
+
   socialProof: {
     baseOrders:  32,
     baseViewers: 135,
     urgencyBase: 8,
   },
+
   popupFirstDelay:   9000,
   popupMinInterval: 18000,
   popupMaxInterval: 34000,
@@ -53,6 +58,110 @@ const CONFIG = {
     (n, ref) => ref ? `${n} vient de commander ${ref}` : `${n} vient de commander`,
     (n, ref) => ref ? `${n} a réservé — ${ref}` : `${n} a réservé`,
   ],
+
+  delivery: {
+    enabled: true,
+    defaultMode: 'relay',          // home | relay | locker
+    defaultCarrier: 'mondial_relay',
+
+    carriers: {
+      mondial_relay: {
+        name: 'Mondial Relay',
+        supports: ['relay', 'locker'],
+      },
+      chronopost: {
+        name: 'Chronopost',
+        supports: ['relay', 'locker', 'home'],
+      },
+    },
+
+    // Mock data ready to be replaced by real endpoints / backend proxy
+    mockPoints: {
+      mondial_relay: [
+        {
+          id: 'MR-001',
+          name: 'Locker Centre Ville',
+          address: '10 Rue Centrale',
+          zip: '34000',
+          city: 'Montpellier',
+          lat: 43.6112,
+          lng: 3.8767,
+          distanceKm: 0.8,
+          type: 'locker',
+          hours: '24h/24',
+          label: 'Locker Centre Ville — 10 Rue Centrale, 34000 Montpellier',
+        },
+        {
+          id: 'MR-002',
+          name: 'Relais Tabac Express',
+          address: '5 Avenue de la Gare',
+          zip: '34000',
+          city: 'Montpellier',
+          lat: 43.6139,
+          lng: 3.8731,
+          distanceKm: 1.2,
+          type: 'relay',
+          hours: '09:00–19:00',
+          label: 'Relais Tabac Express — 5 Avenue de la Gare, 34000 Montpellier',
+        },
+        {
+          id: 'MR-003',
+          name: 'Locker Port Marianne',
+          address: '42 Avenue du Mondial',
+          zip: '34000',
+          city: 'Montpellier',
+          lat: 43.6034,
+          lng: 3.8944,
+          distanceKm: 2.1,
+          type: 'locker',
+          hours: '24h/24',
+          label: 'Locker Port Marianne — 42 Avenue du Mondial, 34000 Montpellier',
+        },
+      ],
+
+      chronopost: [
+        {
+          id: 'CH-001',
+          name: 'Chrono Relais Comédie',
+          address: '12 Place de la Comédie',
+          zip: '34000',
+          city: 'Montpellier',
+          lat: 43.6083,
+          lng: 3.8795,
+          distanceKm: 0.6,
+          type: 'relay',
+          hours: '08:30–20:00',
+          label: 'Chrono Relais Comédie — 12 Place de la Comédie, 34000 Montpellier',
+        },
+        {
+          id: 'CH-002',
+          name: 'Chronopost Locker Sud',
+          address: '78 Rue du Sud',
+          zip: '34070',
+          city: 'Montpellier',
+          lat: 43.5983,
+          lng: 3.8712,
+          distanceKm: 1.9,
+          type: 'locker',
+          hours: '24h/24',
+          label: 'Chronopost Locker Sud — 78 Rue du Sud, 34070 Montpellier',
+        },
+        {
+          id: 'CH-003',
+          name: 'Chrono Shop Gare',
+          address: '3 Boulevard de Strasbourg',
+          zip: '34000',
+          city: 'Montpellier',
+          lat: 43.6048,
+          lng: 3.8808,
+          distanceKm: 1.4,
+          type: 'relay',
+          hours: '09:00–18:30',
+          label: 'Chrono Shop Gare — 3 Boulevard de Strasbourg, 34000 Montpellier',
+        },
+      ],
+    },
+  },
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -69,6 +178,15 @@ const state = {
   shippingLabel: CONFIG.shipping.default.label,
   paymentMode:   'stripe',
 
+  // Enhanced delivery state
+  deliveryMode: CONFIG.delivery.defaultMode,
+  carrierCode:  CONFIG.delivery.defaultCarrier,
+  carrierName:  CONFIG.delivery.carriers[CONFIG.delivery.defaultCarrier]?.name || 'Mondial Relay',
+  pickupPoint:  null,
+  deliveryModuleEnabled: false,
+  pickupPointsLoaded: false,
+  pickupLoading: false,
+
   get subtotal()   { return this.productPrice * this.quantity; },
   get total()      { return this.productPrice > 0 ? this.subtotal + this.shippingPrice : 0; },
   get hasProduct() { return this.productPrice > 0; },
@@ -78,6 +196,7 @@ const state = {
 // DOM — Lazily cached selectors (singleton pattern)
 // ════════════════════════════════════════════════════════════════
 const _domCache = {};
+
 function $id(id) {
   if (!_domCache[id]) _domCache[id] = document.getElementById(id);
   return _domCache[id];
@@ -146,6 +265,32 @@ const DOM = {
   hiddenShippingLabel: () => $id('hiddenShippingLabel'),
   hiddenPaymentMode:   () => $id('hiddenPaymentMode'),
 
+  // Enhanced delivery hidden inputs (optional)
+  hiddenCarrierCode:      () => $id('carrier_code'),
+  hiddenCarrierName:      () => $id('carrier_name'),
+  hiddenDeliveryType:     () => $id('delivery_type'),
+  hiddenPickupPointId:    () => $id('pickup_point_id'),
+  hiddenPickupPointName:  () => $id('pickup_point_name'),
+  hiddenPickupPointAddr:  () => $id('pickup_point_address'),
+  hiddenPickupPointZip:   () => $id('pickup_point_zip'),
+  hiddenPickupPointCity:  () => $id('pickup_point_city'),
+  hiddenPickupPointDist:  () => $id('pickup_point_distance'),
+  hiddenPickupPointLabel: () => $id('pickup_point_label'),
+
+  // Enhanced delivery UI (optional / future-safe)
+  deliveryModeBtns:  () => $qsa('[data-delivery-mode]'),
+  carrierBtns:       () => $qsa('[data-carrier]'),
+  pickupPanel:       () => $id('pickupPanel') || $id('pickup-panel'),
+  pickupList:        () => $id('pickupList') || $id('pickup-list'),
+  pickupMap:         () => $id('pickupMap') || $id('map'),
+  pickupSummary:     () => $id('pickupSummary') || $id('pickup-summary'),
+  pickupStatus:      () => $id('pickupStatus') || $id('pickup-status'),
+  pickupEmpty:       () => $id('pickupEmpty') || $id('pickup-empty'),
+  pickupLoading:     () => $id('pickupLoading') || $id('pickup-loading'),
+  pickupSelectedBox: () => $id('pickupSelectedBox') || $id('pickup-selected-box'),
+  pickupSelectedName:() => $id('pickupSelectedName') || $id('pickup-selected-name'),
+  pickupSelectedMeta:() => $id('pickupSelectedMeta') || $id('pickup-selected-meta'),
+
   mbbTotal: () => $id('mbbTotal'),
   mbbCta:   () => $id('mbbCta'),
 
@@ -169,15 +314,20 @@ const DOM = {
 // ════════════════════════════════════════════════════════════════
 const fmt = {
   euro: v => new Intl.NumberFormat('fr-FR', { style:'currency', currency:'EUR' }).format(v),
+  km:   v => `${Number(v).toFixed(1).replace('.', ',')} km`,
 };
+
+// ════════════════════════════════════════════════════════════════
+// DELIVERY MODULE INTERNALS
+// ════════════════════════════════════════════════════════════════
+let pickupMapInstance = null;
+let pickupMarkers = [];
+let currentPickupPoints = [];
 
 // ════════════════════════════════════════════════════════════════
 // MICRO-INTERACTION UTILITIES
 // ════════════════════════════════════════════════════════════════
 
-/**
- * Animate a number element with a fast count-up from previous value to next.
- */
 function animateNumber(el, from, to, duration = 320) {
   if (!el) return;
   if (from === to || isNaN(from) || isNaN(to)) {
@@ -195,7 +345,6 @@ function animateNumber(el, from, to, duration = 320) {
   requestAnimationFrame(tick);
 }
 
-/** Brief scale-bump on an element */
 function bump(el, cls = 'bump') {
   if (!el) return;
   el.classList.remove(cls);
@@ -204,7 +353,6 @@ function bump(el, cls = 'bump') {
   setTimeout(() => el.classList.remove(cls), 440);
 }
 
-/** Flash the pc-num element on value change */
 function flashPriceCard(newVal) {
   const el = DOM.amountDisplay();
   if (!el) return;
@@ -241,10 +389,11 @@ function initRipple() {
 // RENDER — Sync all UI from state
 // ════════════════════════════════════════════════════════════════
 function render() {
-  const { hasProduct, productPrice, productName, productRef,
-          subtotal, total, shippingPrice, quantity, paymentMode } = state;
+  const {
+    hasProduct, productPrice, productName, productRef,
+    subtotal, total, shippingPrice, quantity, paymentMode
+  } = state;
 
-  // Price card
   const ac = DOM.amountCard();
   if (ac) {
     const wasActive = ac.classList.contains('has-value');
@@ -264,32 +413,42 @@ function render() {
     }
   }
 
-  const curr = DOM.amountCurrency(); if (curr) curr.textContent = hasProduct ? '€' : '';
+  const curr = DOM.amountCurrency();
+  if (curr) curr.textContent = hasProduct ? '€' : '';
+
   const ah = DOM.amountHint();
   if (ah) ah.textContent = hasProduct
     ? `✓ ${productName || productRef} — ${fmt.euro(subtotal)}`
     : 'Entrez votre référence';
+
   const aqd = DOM.amountQtyDisplay();
   if (aqd) {
     const prev = aqd.textContent;
     const next = `×${quantity}`;
-    if (prev !== next) { aqd.textContent = next; bump(aqd); }
+    if (prev !== next) {
+      aqd.textContent = next;
+      bump(aqd);
+    }
   }
 
-  // Step 4 recap
   const sr = DOM.summaryRef(); if (sr) sr.textContent = productRef || '—';
   const sn = DOM.summaryName(); if (sn) sn.textContent = productName || productRef || '—';
   const sq = DOM.summaryQty();
-  if (sq) { sq.textContent = `×${quantity}`; sq.style.display = quantity > 1 ? '' : 'none'; }
+  if (sq) {
+    sq.textContent = `×${quantity}`;
+    sq.style.display = quantity > 1 ? '' : 'none';
+  }
   const sa = DOM.summaryAmount(); if (sa) sa.textContent = hasProduct ? fmt.euro(subtotal) : '—';
   const ss = DOM.summaryShipping(); if (ss) ss.textContent = fmt.euro(shippingPrice);
   const st = DOM.summaryTotal();
   if (st) {
     const next = hasProduct ? fmt.euro(total) : '—';
-    if (st.textContent !== next) { st.textContent = next; bump(st, 'bump'); }
+    if (st.textContent !== next) {
+      st.textContent = next;
+      bump(st, 'bump');
+    }
   }
 
-  // Sidebar
   const sbr = DOM.sbRef(); if (sbr) sbr.textContent = productRef || '—';
   const sbn = DOM.sbName(); if (sbn) sbn.textContent = productName || (productRef ? productRef : 'Entrez une référence');
   const sba = DOM.sbAmount(); if (sba) sba.textContent = hasProduct ? fmt.euro(subtotal) : '—';
@@ -297,27 +456,33 @@ function render() {
   const sbt = DOM.sbTotal();
   if (sbt) {
     const next = hasProduct ? fmt.euro(total) : '—';
-    if (sbt.textContent !== next) { sbt.textContent = next; bump(sbt, 'bump'); }
+    if (sbt.textContent !== next) {
+      sbt.textContent = next;
+      bump(sbt, 'bump');
+    }
   }
 
-  // Sidebar Stripe CTA: only show when product is confirmed
   const sbCta = DOM.sbPayCta();
   if (sbCta) sbCta.classList.toggle('hidden', !hasProduct);
 
-  // Mobile bar total
   const mt = DOM.mbbTotal();
   if (mt) {
     const next = hasProduct ? fmt.euro(total) : '—';
-    if (mt.textContent !== next) { mt.textContent = next; bump(mt, 'bump'); }
+    if (mt.textContent !== next) {
+      mt.textContent = next;
+      bump(mt, 'bump');
+    }
   }
 
-  // Hidden fields
   const ha = DOM.hiddenAmount(); if (ha) ha.value = productPrice.toFixed(2);
   const hq = DOM.hiddenQuantity(); if (hq) hq.value = quantity;
   const hs = DOM.hiddenShipping(); if (hs) hs.value = shippingPrice.toFixed(2);
   const ht = DOM.hiddenTotal(); if (ht) ht.value = total.toFixed(2);
   const hsl = DOM.hiddenShippingLabel(); if (hsl) hsl.value = state.shippingLabel;
   const hpm = DOM.hiddenPaymentMode(); if (hpm) hpm.value = paymentMode;
+
+  syncDeliveryHiddenFields();
+  renderPickupSummary();
 
   updateProgress();
 }
@@ -352,10 +517,9 @@ function goToStep(n) {
     if (!el) continue;
     if (i === n) {
       el.hidden = false;
-      // Re-trigger animation
       requestAnimationFrame(() => {
         el.style.animation = 'none';
-        el.offsetHeight;  // reflow
+        el.offsetHeight;
         el.style.animation = '';
       });
     } else if (i > n) {
@@ -449,7 +613,6 @@ function renderStep2Summary() {
   }
 }
 
-/** Safely escape user input before injection into innerHTML */
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -548,6 +711,16 @@ function validateStep(step) {
         }
       }
     });
+
+    if (ok && state.deliveryModuleEnabled && state.deliveryMode !== 'home' && !state.pickupPoint) {
+      const status = DOM.pickupStatus();
+      if (status) {
+        status.textContent = 'Veuillez sélectionner un point relais ou un locker avant de continuer.';
+      } else {
+        alert('Veuillez sélectionner un point relais ou un locker avant de continuer.');
+      }
+      ok = false;
+    }
   }
 
   return ok;
@@ -589,7 +762,6 @@ function handleReference() {
       ];
       if (ut) ut.textContent = urgencyPhrases[Math.floor(Math.random() * urgencyPhrases.length)];
     }
-
   } else if (raw.length >= 2) {
     state.isKnownRef   = false;
     state.productName  = raw;
@@ -600,7 +772,6 @@ function handleReference() {
     if (hint) { hint.textContent = 'Référence libre — entrez le prix ci-dessous.'; hint.style.color = ''; }
     if (cpf) cpf.hidden = false;
     if (us) us.hidden = true;
-
   } else {
     state.isKnownRef   = false;
     state.productName  = '';
@@ -653,8 +824,14 @@ function bindStepNextButtons() {
     setTimeout(() => document.getElementById('adresse1')?.focus(), 420);
   });
 
-  DOM.step3Next()?.addEventListener('click', () => {
+  DOM.step3Next()?.addEventListener('click', async () => {
     if (!validateStep(3)) return;
+
+    if (state.deliveryModuleEnabled && state.deliveryMode !== 'home' && !state.pickupPointsLoaded) {
+      await loadPickupPoints();
+      if (!state.pickupPoint) return;
+    }
+
     render();
     goToStep(4);
   });
@@ -675,7 +852,7 @@ function initMobileBar() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// SHIPPING OPTIONS
+// LEGACY SHIPPING OPTIONS
 // ════════════════════════════════════════════════════════════════
 function initShipping() {
   DOM.shippingOpts().forEach(btn => {
@@ -714,7 +891,7 @@ function initPayment() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// INLINE VALIDATION — blur-based for each input
+// INLINE VALIDATION
 // ════════════════════════════════════════════════════════════════
 function initInlineValidation() {
   const rules = {
@@ -737,10 +914,19 @@ function initInlineValidation() {
       clearErr(errId);
       markValid(id);
       updateProgress();
+
+      if (state.deliveryModuleEnabled && ['adresse1','ville','code_postal'].includes(id) && state.deliveryMode !== 'home') {
+        debouncedLoadPickupPoints();
+      }
     });
+
     el.addEventListener('input', () => {
       clearErr(`${id}Error`);
       updateProgress();
+
+      if (state.deliveryModuleEnabled && ['adresse1','ville','code_postal'].includes(id) && state.deliveryMode !== 'home') {
+        debouncedLoadPickupPoints();
+      }
     });
   });
 }
@@ -749,7 +935,7 @@ function initInlineValidation() {
 // AUTOSAVE — localStorage
 // ════════════════════════════════════════════════════════════════
 function initAutosave() {
-  const KEY    = 'lo_draft';
+  const KEY = 'lo_draft';
   const FIELDS = ['prenom','nom','email','telephone','adresse1','adresse2','ville','code_postal','pseudo'];
 
   try {
@@ -776,7 +962,7 @@ function initAutosave() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// SOCIAL PROOF — animated counters with smooth transitions
+// SOCIAL PROOF
 // ════════════════════════════════════════════════════════════════
 function initSocialProof() {
   const { baseOrders, baseViewers } = CONFIG.socialProof;
@@ -784,9 +970,9 @@ function initSocialProof() {
   let orders  = baseOrders;
   let viewers = baseViewers + Math.floor(Math.random() * 20);
 
-  const oc = DOM.heroOrderCount(); if (oc) oc.textContent = orders;
+  const oc = DOM.heroOrderCount();
+  if (oc) oc.textContent = orders;
 
-  // Smooth viewer counter update
   function updateViewers(newVal) {
     const el = DOM.liveViewers();
     if (!el) return;
@@ -799,19 +985,20 @@ function initSocialProof() {
   setInterval(() => {
     if (Math.random() < .14) {
       orders += Math.floor(Math.random() * 3) + 1;
-      const el = DOM.heroOrderCount(); if (el) el.textContent = orders;
+      const el = DOM.heroOrderCount();
+      if (el) el.textContent = orders;
     }
   }, 13000);
 
   setInterval(() => {
-    const delta   = Math.floor(Math.random() * 7) - 3;
+    const delta = Math.floor(Math.random() * 7) - 3;
     viewers = Math.max(75, viewers + delta);
     updateViewers(viewers);
   }, 8000);
 }
 
 // ════════════════════════════════════════════════════════════════
-// PURCHASE POPUP — rotation dynamique de prénoms
+// PURCHASE POPUP
 // ════════════════════════════════════════════════════════════════
 function initPurchasePopup() {
   const popup = DOM.purchasePopup();
@@ -835,7 +1022,8 @@ function initPurchasePopup() {
   function refillNamePool() { namePool = shuffle(names); }
   function refillTmplPool() { tmplPool = shuffle([...Array(templates.length).keys()]); }
 
-  refillNamePool(); refillTmplPool();
+  refillNamePool();
+  refillTmplPool();
 
   function nextName()     { if (!namePool.length) refillNamePool(); return namePool.pop(); }
   function nextTemplate() { if (!tmplPool.length) refillTmplPool(); return templates[tmplPool.pop()]; }
@@ -876,7 +1064,7 @@ function syncStripeLinks() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// SCROLL REVEAL — IntersectionObserver for progressive reveal
+// SCROLL REVEAL
 // ════════════════════════════════════════════════════════════════
 function initScrollReveal() {
   const targets = document.querySelectorAll('.social-card, .social-hub-head');
@@ -885,7 +1073,7 @@ function initScrollReveal() {
     return;
   }
   const io = new IntersectionObserver((entries) => {
-    entries.forEach((entry, idx) => {
+    entries.forEach((entry) => {
       if (entry.isIntersecting) {
         const el = entry.target;
         const delay = el.classList.contains('social-card')
@@ -903,25 +1091,19 @@ function initScrollReveal() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// HAPTIC SCALE — mobile press feedback on primary CTAs
+// HAPTIC SCALE
 // ════════════════════════════════════════════════════════════════
 function initHapticScale() {
   const ctaSelectors = '.step-next, .cta-btn, .mob-cta, .hero-cta';
   document.querySelectorAll(ctaSelectors).forEach(btn => {
-    btn.addEventListener('touchstart', () => {
-      btn.style.transform = 'scale(0.97)';
-    }, { passive: true });
-    btn.addEventListener('touchend', () => {
-      btn.style.transform = '';
-    }, { passive: true });
-    btn.addEventListener('touchcancel', () => {
-      btn.style.transform = '';
-    }, { passive: true });
+    btn.addEventListener('touchstart', () => { btn.style.transform = 'scale(0.97)'; }, { passive: true });
+    btn.addEventListener('touchend', () => { btn.style.transform = ''; }, { passive: true });
+    btn.addEventListener('touchcancel', () => { btn.style.transform = ''; }, { passive: true });
   });
 }
 
 // ════════════════════════════════════════════════════════════════
-// KEYBOARD NAVIGATION — Enter key on inputs
+// KEYBOARD NAVIGATION
 // ════════════════════════════════════════════════════════════════
 function initKeyboardNav() {
   DOM.referenceInput()?.addEventListener('keydown', e => {
@@ -945,10 +1127,387 @@ function initKeyboardNav() {
 }
 
 // ════════════════════════════════════════════════════════════════
+// ENHANCED DELIVERY MODULE
+// ════════════════════════════════════════════════════════════════
+function initEnhancedDeliveryModule() {
+  const hasModeButtons = DOM.deliveryModeBtns().length > 0;
+  const hasCarrierButtons = DOM.carrierBtns().length > 0;
+  const hasPickupPanel = !!DOM.pickupPanel();
+  const hasPickupList = !!DOM.pickupList();
+
+  state.deliveryModuleEnabled = !!(hasModeButtons || hasCarrierButtons || hasPickupPanel || hasPickupList);
+
+  if (!state.deliveryModuleEnabled) return;
+
+  DOM.deliveryModeBtns().forEach(btn => {
+    btn.addEventListener('click', () => {
+      DOM.deliveryModeBtns().forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+        b.setAttribute('aria-checked', 'false');
+      });
+
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+      btn.setAttribute('aria-checked', 'true');
+
+      state.deliveryMode = btn.dataset.deliveryMode || CONFIG.delivery.defaultMode;
+      state.pickupPoint = null;
+      state.pickupPointsLoaded = false;
+
+      applyDeliveryPreset();
+      togglePickupPanel();
+      render();
+
+      if (state.deliveryMode !== 'home') {
+        debouncedLoadPickupPoints();
+      }
+    });
+  });
+
+  DOM.carrierBtns().forEach(btn => {
+    btn.addEventListener('click', () => {
+      DOM.carrierBtns().forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+        b.setAttribute('aria-checked', 'false');
+      });
+
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+      btn.setAttribute('aria-checked', 'true');
+
+      state.carrierCode = btn.dataset.carrier || CONFIG.delivery.defaultCarrier;
+      state.carrierName = CONFIG.delivery.carriers[state.carrierCode]?.name || state.carrierCode;
+      state.pickupPoint = null;
+      state.pickupPointsLoaded = false;
+
+      applyDeliveryPreset();
+      render();
+
+      if (state.deliveryMode !== 'home') {
+        debouncedLoadPickupPoints();
+      }
+    });
+  });
+
+  togglePickupPanel();
+  applyDeliveryPreset();
+  render();
+}
+
+function applyDeliveryPreset() {
+  const presets = {
+    home:   { price: 8.90, label: 'Domicile Premium' },
+    relay:  { price: 6.00, label: state.carrierName ? `${state.carrierName} — Point relais` : 'Relais Standard' },
+    locker: { price: 6.90, label: state.carrierName ? `${state.carrierName} — Locker` : 'Relais Express' },
+  };
+
+  const chosen = presets[state.deliveryMode] || presets.relay;
+  state.shippingPrice = chosen.price;
+  state.shippingLabel = chosen.label;
+}
+
+function togglePickupPanel() {
+  const panel = DOM.pickupPanel();
+  if (!panel) return;
+  panel.hidden = state.deliveryMode === 'home';
+}
+
+function setPickupLoading(isLoading) {
+  state.pickupLoading = isLoading;
+  const loading = DOM.pickupLoading();
+  const status = DOM.pickupStatus();
+
+  if (loading) loading.hidden = !isLoading;
+  if (status) status.textContent = isLoading ? 'Recherche des points proches…' : '';
+}
+
+function setPickupEmpty(visible, message = '') {
+  const empty = DOM.pickupEmpty();
+  const status = DOM.pickupStatus();
+
+  if (empty) {
+    empty.hidden = !visible;
+    if (message) empty.textContent = message;
+  }
+
+  if (status && visible && message) status.textContent = message;
+}
+
+function getAddressSeed() {
+  const address = document.getElementById('adresse1')?.value?.trim() || '';
+  const zip     = document.getElementById('code_postal')?.value?.trim() || '';
+  const city    = document.getElementById('ville')?.value?.trim() || '';
+  return { address, zip, city };
+}
+
+function canLoadPickupPoints() {
+  const { address, zip, city } = getAddressSeed();
+  return Boolean(address && zip && city);
+}
+
+async function loadPickupPoints() {
+  if (!state.deliveryModuleEnabled) return;
+  if (state.deliveryMode === 'home') return;
+
+  if (!canLoadPickupPoints()) {
+    setPickupEmpty(true, 'Renseignez l’adresse, la ville et le code postal pour charger les points proches.');
+    renderPickupList([]);
+    destroyPickupMarkers();
+    return;
+  }
+
+  setPickupLoading(true);
+  setPickupEmpty(false);
+
+  try {
+    const points = await fetchPickupPointsMockAware();
+    currentPickupPoints = points;
+    state.pickupPointsLoaded = true;
+
+    if (!points.length) {
+      setPickupEmpty(true, 'Aucun point relais ou locker trouvé pour cette adresse.');
+      renderPickupList([]);
+      destroyPickupMarkers();
+      state.pickupPoint = null;
+      render();
+      return;
+    }
+
+    renderPickupList(points);
+    renderPickupMap(points);
+
+    if (DOM.pickupStatus()) {
+      DOM.pickupStatus().textContent = `${points.length} point${points.length > 1 ? 's' : ''} trouvé${points.length > 1 ? 's' : ''} à proximité.`;
+    }
+  } catch (err) {
+    console.error('[LiveOrder] Pickup load error:', err);
+    setPickupEmpty(true, 'Impossible de charger les points pour le moment.');
+    renderPickupList([]);
+    destroyPickupMarkers();
+  } finally {
+    setPickupLoading(false);
+  }
+}
+
+async function fetchPickupPointsMockAware() {
+  // Hook to replace later with real API / backend proxy.
+  // Example future:
+  // return await fetch('/api/pickup-points?...').then(r => r.json());
+
+  const carrier = state.carrierCode || CONFIG.delivery.defaultCarrier;
+  const raw = CONFIG.delivery.mockPoints[carrier] || [];
+
+  const filtered = raw.filter(point => {
+    if (state.deliveryMode === 'home') return false;
+    if (state.deliveryMode === 'relay') return point.type === 'relay' || point.type === 'locker';
+    if (state.deliveryMode === 'locker') return point.type === 'locker';
+    return true;
+  });
+
+  const seeded = filtered.map((point, idx) => ({
+    ...point,
+    distanceKm: typeof point.distanceKm === 'number'
+      ? point.distanceKm
+      : Number((0.7 + (idx * 0.6)).toFixed(1)),
+    carrierCode: carrier,
+    carrierName: CONFIG.delivery.carriers[carrier]?.name || carrier,
+    deliveryType: state.deliveryMode,
+  }));
+
+  return new Promise(resolve => {
+    setTimeout(() => resolve(seeded), 650);
+  });
+}
+
+function renderPickupList(points) {
+  const list = DOM.pickupList();
+  if (!list) return;
+
+  list.innerHTML = '';
+
+  points.forEach(point => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'pickup-item';
+    item.dataset.pickupId = point.id;
+    item.setAttribute('aria-label', `${point.name}, ${point.address}, ${point.city}`);
+    item.innerHTML = `
+      <span class="pickup-item-head">
+        <strong class="pickup-item-name">${escapeHtml(point.name)}</strong>
+        <span class="pickup-item-distance">${fmt.km(point.distanceKm)}</span>
+      </span>
+      <span class="pickup-item-meta">
+        <span>${escapeHtml(point.address)}, ${escapeHtml(point.zip)} ${escapeHtml(point.city)}</span>
+        <span>${point.type === 'locker' ? 'Locker' : 'Point relais'} · ${escapeHtml(point.carrierName)}</span>
+      </span>
+      ${point.hours ? `<span class="pickup-item-hours">${escapeHtml(point.hours)}</span>` : ''}
+    `;
+
+    item.addEventListener('click', () => {
+      selectPickupPoint(point);
+      highlightPickupListSelection();
+    });
+
+    list.appendChild(item);
+  });
+
+  highlightPickupListSelection();
+}
+
+function highlightPickupListSelection() {
+  const list = DOM.pickupList();
+  if (!list) return;
+
+  list.querySelectorAll('.pickup-item').forEach(el => {
+    const isActive = state.pickupPoint && el.dataset.pickupId === state.pickupPoint.id;
+    el.classList.toggle('is-selected', isActive);
+    el.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+}
+
+function renderPickupSummary() {
+  const box  = DOM.pickupSelectedBox();
+  const name = DOM.pickupSelectedName();
+  const meta = DOM.pickupSelectedMeta();
+  const sum  = DOM.pickupSummary();
+
+  if (!state.deliveryModuleEnabled) return;
+
+  if (box) box.hidden = !state.pickupPoint;
+  if (sum) sum.hidden = !state.pickupPoint;
+
+  if (!state.pickupPoint) {
+    if (name) name.textContent = '';
+    if (meta) meta.textContent = '';
+    return;
+  }
+
+  if (name) name.textContent = state.pickupPoint.name;
+  if (meta) {
+    meta.textContent = `${state.pickupPoint.address}, ${state.pickupPoint.zip} ${state.pickupPoint.city} · ${fmt.km(state.pickupPoint.distanceKm)}`;
+  }
+}
+
+function selectPickupPoint(point) {
+  state.pickupPoint = {
+    id: point.id,
+    name: point.name,
+    address: point.address,
+    zip: point.zip,
+    city: point.city,
+    distanceKm: point.distanceKm,
+    label: point.label || `${point.name} — ${point.address}, ${point.zip} ${point.city}`,
+    type: point.type,
+    carrierCode: point.carrierCode || state.carrierCode,
+    carrierName: point.carrierName || state.carrierName,
+  };
+
+  if (DOM.pickupStatus()) {
+    DOM.pickupStatus().textContent = `${point.name} sélectionné.`;
+  }
+
+  highlightPickupListSelection();
+  focusPickupMarker(point.id);
+  render();
+}
+
+function renderPickupMap(points) {
+  const mapEl = DOM.pickupMap();
+  if (!mapEl) return;
+
+  if (!window.L) {
+    mapEl.innerHTML = `
+      <div style="padding:16px;border:1px solid rgba(0,0,0,.08);border-radius:14px;background:#fff;">
+        Carte indisponible : Leaflet n’est pas chargé.
+      </div>
+    `;
+    return;
+  }
+
+  const first = points[0];
+  const initialLat = first?.lat || 43.6112;
+  const initialLng = first?.lng || 3.8767;
+
+  if (!pickupMapInstance) {
+    pickupMapInstance = window.L.map(mapEl).setView([initialLat, initialLng], 13);
+
+    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap',
+    }).addTo(pickupMapInstance);
+  } else {
+    pickupMapInstance.setView([initialLat, initialLng], 13);
+  }
+
+  destroyPickupMarkers();
+
+  points.forEach(point => {
+    const marker = window.L.marker([point.lat, point.lng]).addTo(pickupMapInstance);
+    marker.on('click', () => selectPickupPoint(point));
+    marker._pickupId = point.id;
+    pickupMarkers.push(marker);
+  });
+
+  setTimeout(() => pickupMapInstance.invalidateSize(), 80);
+}
+
+function destroyPickupMarkers() {
+  if (!pickupMapInstance) return;
+  pickupMarkers.forEach(marker => {
+    try { pickupMapInstance.removeLayer(marker); } catch (_) {}
+  });
+  pickupMarkers = [];
+}
+
+function focusPickupMarker(pickupId) {
+  if (!pickupMapInstance || !pickupId) return;
+  const marker = pickupMarkers.find(m => m._pickupId === pickupId);
+  if (!marker) return;
+  const latLng = marker.getLatLng();
+  pickupMapInstance.flyTo(latLng, 15, { duration: 0.55 });
+}
+
+function syncDeliveryHiddenFields() {
+  const carrierCodeEl = DOM.hiddenCarrierCode();
+  const carrierNameEl = DOM.hiddenCarrierName();
+  const deliveryTypeEl = DOM.hiddenDeliveryType();
+  const pointIdEl = DOM.hiddenPickupPointId();
+  const pointNameEl = DOM.hiddenPickupPointName();
+  const pointAddrEl = DOM.hiddenPickupPointAddr();
+  const pointZipEl = DOM.hiddenPickupPointZip();
+  const pointCityEl = DOM.hiddenPickupPointCity();
+  const pointDistEl = DOM.hiddenPickupPointDist();
+  const pointLabelEl = DOM.hiddenPickupPointLabel();
+
+  if (carrierCodeEl) carrierCodeEl.value = state.carrierCode || '';
+  if (carrierNameEl) carrierNameEl.value = state.carrierName || '';
+  if (deliveryTypeEl) deliveryTypeEl.value = state.deliveryMode || '';
+
+  if (pointIdEl) pointIdEl.value = state.pickupPoint?.id || '';
+  if (pointNameEl) pointNameEl.value = state.pickupPoint?.name || '';
+  if (pointAddrEl) pointAddrEl.value = state.pickupPoint?.address || '';
+  if (pointZipEl) pointZipEl.value = state.pickupPoint?.zip || '';
+  if (pointCityEl) pointCityEl.value = state.pickupPoint?.city || '';
+  if (pointDistEl) pointDistEl.value = state.pickupPoint?.distanceKm ?? '';
+  if (pointLabelEl) pointLabelEl.value = state.pickupPoint?.label || '';
+}
+
+let pickupDebounceTimer = null;
+function debouncedLoadPickupPoints() {
+  clearTimeout(pickupDebounceTimer);
+  pickupDebounceTimer = setTimeout(() => {
+    loadPickupPoints();
+  }, 360);
+}
+
+// ════════════════════════════════════════════════════════════════
 // FORM SUBMIT
 // ════════════════════════════════════════════════════════════════
 DOM.form()?.addEventListener('submit', async e => {
   e.preventDefault();
+
+  if (!validateStep(3) && state.currentStep >= 3) return;
 
   const btn    = DOM.submitBtn();
   const btnTxt = DOM.submitBtnTxt();
@@ -956,7 +1515,7 @@ DOM.form()?.addEventListener('submit', async e => {
 
   btn.disabled = true;
   btn.classList.add('loading');
-  if (btnTxt) { btnTxt.style.opacity = '0'; }
+  if (btnTxt) btnTxt.style.opacity = '0';
   if (pb) pb.style.width = '95%';
 
   try {
@@ -967,24 +1526,25 @@ DOM.form()?.addEventListener('submit', async e => {
     });
 
     if (res.ok) {
-      DOM.form().hidden           = true;
-      DOM.successState().hidden   = false;
+      DOM.form().hidden = true;
+      DOM.successState().hidden = false;
       DOM.stepNav().style.display = 'none';
       DOM.successState().scrollIntoView({ behavior:'smooth', block:'start' });
       if (pb) pb.style.width = '100%';
       pb?.parentElement?.setAttribute('aria-valuenow', 100);
       try { localStorage.removeItem('lo_draft'); } catch (_) {}
-
     } else {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `Erreur serveur (${res.status})`);
     }
-
   } catch (err) {
     console.error('[LiveOrder] Submit error:', err);
     btn.disabled = false;
     btn.classList.remove('loading');
-    if (btnTxt) { btnTxt.style.opacity = '1'; btnTxt.textContent = 'Valider ma commande'; }
+    if (btnTxt) {
+      btnTxt.style.opacity = '1';
+      btnTxt.textContent = 'Valider ma commande';
+    }
     if (pb) pb.style.width = '90%';
 
     document.querySelector('.submit-err')?.remove();
@@ -1009,48 +1569,105 @@ DOM.form()?.addEventListener('submit', async e => {
 DOM.resetBtn()?.addEventListener('click', resetAll);
 
 function resetAll() {
-  // Clear DOM cache for inputs that may have been re-used
-  ['prenom','nom','email','telephone','adresse1','adresse2','ville','code_postal','pseudo',
-   'reference','prix_unitaire','quantite'].forEach(id => { delete _domCache[id]; });
+  [
+    'prenom','nom','email','telephone','adresse1','adresse2','ville','code_postal','pseudo',
+    'reference','prix_unitaire','quantite',
+    'carrier_code','carrier_name','delivery_type','pickup_point_id',
+    'pickup_point_name','pickup_point_address','pickup_point_zip',
+    'pickup_point_city','pickup_point_distance','pickup_point_label'
+  ].forEach(id => { delete _domCache[id]; });
 
   DOM.form().reset();
-  DOM.form().hidden         = false;
+  DOM.form().hidden = false;
   DOM.successState().hidden = true;
   DOM.stepNav().style.display = '';
-  DOM.submitBtn().disabled  = false;
+  DOM.submitBtn().disabled = false;
   DOM.submitBtn().classList.remove('loading');
+
   const btnTxt = DOM.submitBtnTxt();
-  if (btnTxt) { btnTxt.style.opacity = '1'; btnTxt.textContent = 'Valider ma commande'; }
+  if (btnTxt) {
+    btnTxt.style.opacity = '1';
+    btnTxt.textContent = 'Valider ma commande';
+  }
 
   Object.assign(state, {
-    currentStep: 1, productRef: '', productName: '',
-    productPrice: 0, isKnownRef: false, quantity: 1,
+    currentStep: 1,
+    productRef: '',
+    productName: '',
+    productPrice: 0,
+    isKnownRef: false,
+    quantity: 1,
     shippingPrice: CONFIG.shipping.default.price,
     shippingLabel: CONFIG.shipping.default.label,
     paymentMode: 'stripe',
+
+    deliveryMode: CONFIG.delivery.defaultMode,
+    carrierCode: CONFIG.delivery.defaultCarrier,
+    carrierName: CONFIG.delivery.carriers[CONFIG.delivery.defaultCarrier]?.name || 'Mondial Relay',
+    pickupPoint: null,
+    pickupPointsLoaded: false,
+    pickupLoading: false,
   });
 
   DOM.shippingOpts().forEach((b, i) => {
     b.classList.toggle('active', i === 0);
     b.setAttribute('aria-checked', i === 0 ? 'true' : 'false');
   });
+
   DOM.paymentOpts().forEach((b, i) => {
     b.classList.toggle('active', i === 0);
     b.setAttribute('aria-checked', i === 0 ? 'true' : 'false');
     b.querySelector('.po-radio')?.classList.toggle('checked', i === 0);
   });
 
-  DOM.customPriceField().hidden = true;
-  DOM.urgencyStrip().hidden     = true;
+  DOM.deliveryModeBtns().forEach((b, i) => {
+    const isDefault = (b.dataset.deliveryMode || '') === CONFIG.delivery.defaultMode || i === 0;
+    b.classList.toggle('active', isDefault);
+    b.setAttribute('aria-pressed', isDefault ? 'true' : 'false');
+    b.setAttribute('aria-checked', isDefault ? 'true' : 'false');
+  });
+
+  DOM.carrierBtns().forEach((b, i) => {
+    const isDefault = (b.dataset.carrier || '') === CONFIG.delivery.defaultCarrier || i === 0;
+    b.classList.toggle('active', isDefault);
+    b.setAttribute('aria-pressed', isDefault ? 'true' : 'false');
+    b.setAttribute('aria-checked', isDefault ? 'true' : 'false');
+  });
+
+  DOM.customPriceField()?.setAttribute('hidden', '');
+  if (DOM.customPriceField()) DOM.customPriceField().hidden = true;
+  if (DOM.urgencyStrip()) DOM.urgencyStrip().hidden = true;
+
   const hint = DOM.refHint();
-  if (hint) { hint.textContent = 'Référence vue en live. Toute description acceptée.'; hint.style.color = ''; }
+  if (hint) {
+    hint.textContent = 'Référence vue en live. Toute description acceptée.';
+    hint.style.color = '';
+  }
+
   const icon = DOM.refIcon();
-  if (icon) { icon.textContent = ''; icon.style.color = ''; }
-  const ri = DOM.referenceInput(); if (ri) ri.classList.remove('valid','invalid');
+  if (icon) {
+    icon.textContent = '';
+    icon.style.color = '';
+  }
+
+  const ri = DOM.referenceInput();
+  if (ri) ri.classList.remove('valid','invalid');
 
   document.querySelectorAll('.inp').forEach(el => el.classList.remove('valid','invalid'));
-  document.querySelectorAll('.field-err').forEach(el => { el.textContent = ''; el.classList.remove('visible'); });
+  document.querySelectorAll('.field-err').forEach(el => {
+    el.textContent = '';
+    el.classList.remove('visible');
+  });
   document.querySelectorAll('.step-summary').forEach(el => el.innerHTML = '');
+
+  const pickupList = DOM.pickupList();
+  if (pickupList) pickupList.innerHTML = '';
+  setPickupEmpty(false, '');
+  const status = DOM.pickupStatus();
+  if (status) status.textContent = '';
+  renderPickupSummary();
+  destroyPickupMarkers();
+  togglePickupPanel();
 
   goToStep(1);
   setQuantity(1);
@@ -1086,5 +1703,6 @@ DOM.qtyPlus()?.addEventListener('click',   () => setQuantity(state.quantity + 1)
   initKeyboardNav();
   initScrollReveal();
   initHapticScale();
+  initEnhancedDeliveryModule();
   goToStep(1);
 })();
