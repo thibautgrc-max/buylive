@@ -73,8 +73,8 @@ const CONFIG = {
 
   /* ⚙ Réseaux sociaux — Remplacez avant mise en ligne */
   social: {
-    snapchat: 'https://www.snapchat.com/add/VOTRE_COMPTE_SNAP',
-    tiktok:   'https://www.tiktok.com/@VOTRE_COMPTE_TIKTOK',
+    snapchat: 'https://snapchat.com/t/b6h59xVV',
+    tiktok:   'https://www.tiktok.com/@vision.protocol?_r=1&_t=ZN-95WjgpOCnVG',
     whatnot:  'https://www.whatnot.com/user/VOTRE_COMPTE_WHATNOT',
   },
 
